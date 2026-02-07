@@ -4,7 +4,7 @@ from defaults.trainer import *
 class BYOLTrainer(Trainer):
     def __init__(self, wraped_defs, use_momentum=True):
         super().__init__(wraped_defs)
-        assert self.knn_eval, "knn_eval must be enabled - required for DDP synchronization to prevent NCCL deadlocks"
+        assert self.knn_eval or not ddp_is_on(), "knn_eval must be enabled when using DDP - required for synchronization to prevent NCCL deadlocks"
         self.use_momentum = use_momentum
         self.best_model = model_to_CPU_state(self.model)        
 
