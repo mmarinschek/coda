@@ -1,5 +1,5 @@
 from defaults.bases import *
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 
 __all__ = ['DINO']
 
@@ -108,10 +108,12 @@ class DINOHead(nn.Module):
             layers.append(nn.Linear(hidden_dim, bottleneck_dim))
             self.mlp = nn.Sequential(*layers)
         self.apply(self._init_weights)
-        self.last_layer = nn.utils.weight_norm(nn.Linear(bottleneck_dim, out_dim, bias=False))
-        self.last_layer.weight_g.data.fill_(1)
+        self.last_layer = nn.Linear(bottleneck_dim, out_dim, bias=False)
+        nn.utils.parametrizations.weight_norm(self.last_layer, name='weight', dim=0)
+        with torch.no_grad():
+            self.last_layer.parametrizations.weight.original0.fill_(1)
         if norm_last_layer:
-            self.last_layer.weight_g.requires_grad = False
+            self.last_layer.parametrizations.weight.original0.requires_grad_(False)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -217,7 +219,7 @@ class DINO(BaseModel):
     def forward(self, x, return_embedding = False, adverserial_targets = None, epoch = 0, it=0):
         
         # Forward pass               
-        with autocast(self.use_mixed_precision):
+        with autocast('cuda', enabled=self.use_mixed_precision):
             if return_embedding:
                 x = x.to(self.device_id, non_blocking=True)
                 return None, self.teacher_encoder.backbone(x) 
