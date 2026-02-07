@@ -3,7 +3,8 @@ import defaults
 from defaults.bases import *
 import matplotlib.pyplot as plt
 from .wrappers import DefaultWrapper, dist
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import autocast
+from torch.cuda.amp import GradScaler
 from torch.utils.data.distributed import DistributedSampler as DS
 
         
