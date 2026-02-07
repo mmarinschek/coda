@@ -4,6 +4,7 @@ from defaults.trainer import *
 class BYOLTrainer(Trainer):
     def __init__(self, wraped_defs, use_momentum=True):
         super().__init__(wraped_defs)
+        assert self.knn_eval, "knn_eval must be enabled - required for DDP synchronization to prevent NCCL deadlocks"
         self.use_momentum = use_momentum
         self.best_model = model_to_CPU_state(self.model)        
 
@@ -97,6 +98,10 @@ class BYOLTrainer(Trainer):
      
     def evaluate(self, dataloader=None, **kwargs):
         """Validation loop function.
+
+        IMPORTANT: knn_eval must be enabled (True) in training_params.
+        build_feature_bank and synchronize calls are required on ALL DDP ranks
+        to prevent NCCL deadlocks during distributed training.
         """
         self.build_feature_bank()
 
