@@ -9,9 +9,11 @@ class BYOLTrainer(Trainer):
 
     def train(self):
         self.test_mode = False
+        if not self.is_grid_search:
+            self.load_session(self.restore_only_model)
         self.print_train_init()
-        
-        epoch_bar = range(self.epoch0 + 1, self.epoch0 + self.epochs + 1)
+
+        epoch_bar = range(self.epoch0 + 1, self.epochs + 1)
         if self.is_rank0:
             epoch_bar = tqdm(epoch_bar, desc='Epoch', leave=False)
         
@@ -31,7 +33,8 @@ class BYOLTrainer(Trainer):
                 
                 # going through epoch step
                 if self.val_every != np.inf:
-                    if (self.iters % int(self.val_every * self.epoch_steps) == 0): 
+                    val_interval = max(1, int(self.val_every * self.epoch_steps))
+                    if (self.iters % val_interval == 0):
                         synchronize()
                         self.epoch_step()  
                         self.model.train()         
@@ -93,19 +96,22 @@ class BYOLTrainer(Trainer):
             self.save_session()        
      
     def evaluate(self, dataloader=None, **kwargs):
-        """Validation loop function.        
+        """Validation loop function.
         """
         self.build_feature_bank()
-            
-        if not self.is_rank0: return
+
+        if not self.is_rank0:
+            synchronize()
+            return
 
         self.model.eval()
         if dataloader == None:
             dataloader = self.valloader
-            
+
         if not len(dataloader):
             self.best_model = model_to_CPU_state(self.model)
             self.model.train()
+            synchronize()
             return
 
         n_classes = dataloader.dataset.n_classes
@@ -116,7 +122,7 @@ class BYOLTrainer(Trainer):
             iter_bar = tqdm(dataloader, desc='Validating', leave=False, total=len(dataloader))
         else:
             iter_bar = dataloader
-            
+
         self.val_loss = None
         feature_bank = []
         with torch.no_grad():
@@ -124,34 +130,34 @@ class BYOLTrainer(Trainer):
                 if len(labels) == 2 and isinstance(labels, list):
                     ids    = labels[1]
                     labels = labels[0]
-                    
+
                 labels = labels.to(self.device_id, non_blocking=True)
                 images = images.to(self.device_id, non_blocking=True)
 
                 if is_ddp(self.model):
                     _, features = self.model.module(images, return_embedding=True)
                 else:
-                    _, features = self.model(images, return_embedding=True)                  
+                    _, features = self.model(images, return_embedding=True)
 
                 if self.log_embeddings:
                     feature_bank.append(features.clone().detach().cpu())
 
                 # knn_eval (always True)
                 features = F.normalize(features, dim=1)
-                pred_labels = self.knn_predict(feature = features, 
-                                               feature_bank = self.feature_bank, 
-                                               feature_labels =  self.targets_bank, 
+                pred_labels = self.knn_predict(feature = features,
+                                               feature_bank = self.feature_bank,
+                                               feature_labels =  self.targets_bank,
                                                knn_k = knn_nhood, knn_t = 0.1, classes=n_classes,
                                                multi_label = not dataloader.dataset.is_multiclass)
                 knn_metric.add_preds(pred_labels, labels, using_knn=True)
 
-        # building Umap embeddings        
+        # building Umap embeddings
         if self.log_embeddings:
             self.build_umaps(feature_bank, dataloader, labels=knn_metric.truths, mode='val')
 
         eval_metrics = knn_metric.get_value(use_dist=isinstance(dataloader, DS))
         self.val_target = eval_metrics[f"knn_val_{target_metric}"]
-        
+
         if not self.is_grid_search:
             if self.report_intermediate_steps:
                 self.logging(eval_metrics)
@@ -162,6 +168,7 @@ class BYOLTrainer(Trainer):
             if not self.save_best_model:
                 self.best_model = model_to_CPU_state(self.model)
         self.model.train()
+        synchronize()
 
                     
     @property

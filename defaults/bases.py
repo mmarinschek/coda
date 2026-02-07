@@ -446,7 +446,7 @@ class BaseTrainer:
         self.get_saved_model_path(model_path=model_path)
         if os.path.isfile(self.model_path) and self.restore_session:        
             print("Loading model from {}".format(self.model_path))
-            checkpoint = torch.load(self.model_path)
+            checkpoint = torch.load(self.model_path, map_location="cpu")
             if is_parallel(self.model):
                 self.model.module.load_state_dict(checkpoint['state_dict'])
             else:
@@ -461,12 +461,24 @@ class BaseTrainer:
             
             self.iters = checkpoint['iters']
             self.epoch = checkpoint['epoch']
+            self.epoch0 = checkpoint['epoch']
             self.optimizer.load_state_dict(checkpoint['optimizer'])
             for state in self.optimizer.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(self.device_id)
             self.org_optimizer_state = opimizer_to_CPU_state(self.optimizer)
+            if 'scheduler_states' in checkpoint and hasattr(self, 'scheduler'):
+                for sch, saved_state in zip(self.scheduler.schedulers, checkpoint['scheduler_states']):
+                    if saved_state is not None and hasattr(sch, 'load_state_dict'):
+                        sch.load_state_dict(saved_state)
+                self.scheduler.iter = checkpoint.get('scheduler_iter', self.iters)
+                print("=> restored scheduler state (iter {})".format(self.scheduler.iter))
+            elif hasattr(self, 'scheduler'):
+                self.scheduler.iter = 0
+                for _ in range(self.iters):
+                    self.scheduler.step(0, float('inf'))
+                print("=> scheduler fast-forwarded to iter {}".format(self.scheduler.iter))
             print("=> loaded checkpoint '{}' (epoch {})"
                       .format(self.model_path, checkpoint['epoch']))
 
@@ -492,7 +504,13 @@ class BaseTrainer:
                      'optimizer': opimizer_to_CPU_state(self.optimizer), 'epoch': self.epoch,
                     'parameters' : self.parameters}
             if self.scaler is not None:
-                state['scaler'] = self.scaler.state_dict()            
+                state['scaler'] = self.scaler.state_dict()
+            if hasattr(self, 'scheduler'):
+                scheduler_states = []
+                for sch in self.scheduler.schedulers:
+                    scheduler_states.append(sch.state_dict() if hasattr(sch, 'state_dict') else None)
+                state['scheduler_states'] = scheduler_states
+                state['scheduler_iter'] = self.scheduler.iter
             torch.save(state, self.model_path)
         synchronize()
         
