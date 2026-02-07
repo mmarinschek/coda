@@ -60,7 +60,7 @@ class BYOLTrainer(Trainer):
             labels = labels[0]
 
         # go through the model
-        with autocast(self.use_mixed_precision):
+        with autocast('cuda', enabled=self.use_mixed_precision):
             loss = self.model(images) 
                 
         # backprop

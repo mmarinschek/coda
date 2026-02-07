@@ -104,7 +104,7 @@ class Trainer(BaseTrainer):
         labels = labels.to(self.device_id, non_blocking=True)
         images = images.to(self.device_id, non_blocking=True) 
         
-        with autocast(self.use_mixed_precision):
+        with autocast('cuda', enabled=self.use_mixed_precision):
             outputs = self.model(images)
             loss = self.criterion(outputs, labels)
 

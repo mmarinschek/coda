@@ -108,6 +108,10 @@ class DINOHead(nn.Module):
             layers.append(nn.Linear(hidden_dim, bottleneck_dim))
             self.mlp = nn.Sequential(*layers)
         self.apply(self._init_weights)
+        # PyTorch migration: nn.utils.weight_norm -> nn.utils.parametrizations.weight_norm
+        # weight_g (magnitude) -> parametrizations.weight.original0
+        # weight_v (direction) -> parametrizations.weight.original1
+        # See: https://github.com/pytorch/pytorch/issues/102999
         self.last_layer = nn.Linear(bottleneck_dim, out_dim, bias=False)
         nn.utils.parametrizations.weight_norm(self.last_layer, name='weight', dim=0)
         with torch.no_grad():

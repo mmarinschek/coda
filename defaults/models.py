@@ -2,7 +2,7 @@ import os
 
 from .bases import *
 from utils.transformers import *
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 
 
 class Identity(nn.Module):
@@ -59,7 +59,7 @@ class Classifier(BaseModel):
             self.freeze_submodel(self.backbone)   
 
     def forward(self, x, return_embedding=False, use_patchifier=True, return_all=False):
-        with autocast(self.use_mixed_precision):
+        with autocast('cuda', enabled=self.use_mixed_precision):
             
             if self.freeze_backbone:
                 self.backbone.eval()

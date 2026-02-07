@@ -1,6 +1,6 @@
 from defaults.bases import *
 from defaults.models import Identity
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 
 __all__ = ['Ymodel']
 
@@ -30,7 +30,7 @@ class Ymodel(BaseModel):
                 
 
     def forward(self, x, return_embedding=False):
-        with autocast(self.use_mixed_precision):
+        with autocast('cuda', enabled=self.use_mixed_precision):
             
             self.freeze_check()
             with torch.set_grad_enabled(not self.frozen_foundation):
