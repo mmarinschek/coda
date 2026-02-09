@@ -41,5 +41,6 @@ class DINOWrapper(BYOLWrapper):
         model = DINO(student, teacher, momentum_iters)
         
         if ddp_is_on():
-            model = DDP(model, device_ids=[self.device_id])        
+            ddp_device_ids = None if self.device_id == "cpu" else [self.device_id]
+            model = DDP(model, device_ids=ddp_device_ids)
         return model

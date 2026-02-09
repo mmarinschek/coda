@@ -1,4 +1,5 @@
 from utils import *
+import torch.distributed as dist
 
 from torchvision.transforms import *
 from torch.utils.data.sampler import Sampler
@@ -295,15 +296,15 @@ class BaseSet(Dataset):
     
 class BaseModel(nn.Module):
     """Base model that Classifier subclasses.
-    
+
     This class only has utility functions like freeze/unfreeze and init_weights.
     Not intended to be used directly.
     """
     def __init__(self):
-        super().__init__()  
-        super().__init__() 
-        self.use_mixed_precision = False        
-        self.base_id = torch.cuda.current_device() if self.visible_world else "cpu"
+        super().__init__()
+        super().__init__()
+        self.use_mixed_precision = False
+        self.base_id = self.device_id
     
     def attr_from_dict(self, param_dict):
         for key in param_dict:
@@ -390,23 +391,25 @@ class BaseModel(nn.Module):
                 
     @property
     def visible_world(self):
-        return torch.cuda.device_count()   
-   
+        if dist.is_available() and dist.is_initialized() and not torch.cuda.is_available():
+            return dist.get_world_size()
+        return torch.cuda.device_count()
+
     @property
     def visible_ids(self):
         return list(range(torch.cuda.device_count()))
-    
+
     @property
-    def device_id(self):    
-        did = torch.cuda.current_device() if self.visible_world else "cpu"
-        assert self.base_id == did
-        return did              
-    
+    def device_id(self):
+        if not torch.cuda.is_available():
+            return "cpu"
+        return torch.cuda.current_device()
+
     @property
     def is_rank0(self):
         return is_rank0(self.device_id)
-   
-                
+
+
 class BaseTrainer:
     """Base trainer class that Trainer subclasses.
 
@@ -415,7 +418,7 @@ class BaseTrainer:
     """
     def __init__(self):
         self.scaler = None
-        self.use_mixed_precision = False        
+        self.use_mixed_precision = False
         self.is_supervised = True
         self.val_loss = float("inf")
         self.best_val_loss = float("inf")
@@ -424,9 +427,9 @@ class BaseTrainer:
         self.iters = 0
         self.epoch0 = 0
         self.epoch = 0
-        self.base_id = torch.cuda.current_device() if self.visible_world else "cpu"
+        self.base_id = self.device_id
         self.is_grid_search = False
-        self.report_intermediate_steps = True  
+        self.report_intermediate_steps = True
     
     def attr_from_dict(self, param_dict):
         for key in param_dict:
@@ -576,16 +579,20 @@ class BaseTrainer:
              
     @property
     def visible_world(self):
-        return torch.cuda.device_count()   
-   
+        if dist.is_available() and dist.is_initialized() and not torch.cuda.is_available():
+            return dist.get_world_size()
+        return torch.cuda.device_count()
+
     @property
     def visible_ids(self):
         return list(range(torch.cuda.device_count()))
-    
+
     @property
-    def device_id(self):    
-        return torch.cuda.current_device() if self.visible_world else "cpu"
-    
+    def device_id(self):
+        if not torch.cuda.is_available():
+            return "cpu"
+        return torch.cuda.current_device()
+
     @property
     def is_rank0(self):
         return is_rank0(self.device_id)

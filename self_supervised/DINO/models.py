@@ -154,7 +154,7 @@ class DINO(BaseModel):
                                 nepochs=dino_args.get('nepochs', 1000), 
                                 student_temp=dino_args.get('student_temp', 0.1), 
                                 center_momentum=dino_args.get('center_momentum', 0.9),
-                                barlow_loss_factor=dino_args.get('barlow_loss_factor', 0.)).cuda()        
+                                barlow_loss_factor=dino_args.get('barlow_loss_factor', 0.)).to(self.device_id)
 
         # create online and target encoders
         self.student_encoder = student

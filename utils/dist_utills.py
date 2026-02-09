@@ -2,8 +2,10 @@ import torch
 import torch.distributed as dist
 
 def is_rank0(device_id=None):
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank() == 0
     if device_id is None:
-        device_id = torch.cuda.current_device()
+        device_id = torch.cuda.current_device() if torch.cuda.is_available() else 0
     return device_id == 0
 
 def is_ddp(_class):
@@ -27,7 +29,7 @@ def ddp_is_on():
 
 def print_ddp(text):
     if ddp_is_on():
-        if is_rank0(torch.cuda.current_device()):
+        if is_rank0():
             print(text)
     else:
         print(text)
