@@ -80,9 +80,9 @@ class BYOLTrainer(Trainer):
         
         if self.use_momentum:
             if ddp_is_on():
-                self.model.module.ema_update(self.iters)
+                self.model.module.ema_update(self.iters - 1)
             else:
-                self.model.ema_update(self.iters)
+                self.model.ema_update(self.iters - 1)
 
         self.scheduler.step(self.val_target, self.val_loss)
         if self.iters % self.log_every == 0 or (self.iters == 1 and not self.is_grid_search):
@@ -94,11 +94,16 @@ class BYOLTrainer(Trainer):
     def epoch_step(self, **kwargs):
         self.evaluate()
         if not self.is_grid_search:
-            if getattr(self, '_pending_best_save', False):
+            should_save_best = getattr(self, '_pending_best_save', False)
+            if ddp_is_on():
+                flag = torch.tensor([1 if should_save_best else 0], dtype=torch.long, device=self.device_id)
+                dist.broadcast(flag, src=0)
+                should_save_best = bool(flag.item())
+            if should_save_best:
                 self._pending_best_save = False
                 self.get_saved_model_path()
                 self.save_session(model_path=self.model_path + "_best", verbose=True)
-            self.save_session()        
+            self.save_session()
      
     def evaluate(self, dataloader=None, **kwargs):
         """Validation loop function.

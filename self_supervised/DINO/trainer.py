@@ -49,13 +49,13 @@ class DINOTrainer(BYOLTrainer):
             self.scaler.update() 
 
         if ddp_is_on():
-            self.model.module.ema_update(self.iters)
+            self.model.module.ema_update(self.iters - 1)
         else:
-            self.model.ema_update(self.iters)
+            self.model.ema_update(self.iters - 1)
 
         # updating lr and wd
         self.scheduler.step(self.val_target, self.val_loss)
-        self.optimizer.param_groups[0]["weight_decay"] = self.decay_scheduler(self.iters)
+        self.optimizer.param_groups[0]["weight_decay"] = self.decay_scheduler(self.iters - 1)
         if self.iters % self.log_every == 0 or (self.iters == 1 and not self.is_grid_search):
             loss = dist_average_tensor(loss)
             if self.is_rank0:
