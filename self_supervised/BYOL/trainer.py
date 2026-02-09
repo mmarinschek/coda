@@ -162,6 +162,7 @@ class BYOLTrainer(Trainer):
 
         eval_metrics = knn_metric.get_value(use_dist=isinstance(dataloader, DS))
         self.val_target = eval_metrics[f"knn_val_{target_metric}"]
+        self.last_eval_metrics = eval_metrics
 
         if not self.is_grid_search:
             if self.report_intermediate_steps:

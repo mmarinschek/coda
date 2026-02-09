@@ -507,7 +507,8 @@ class BaseTrainer:
                      'optimizer': opimizer_to_CPU_state(self.optimizer), 'epoch': self.epoch,
                     'parameters' : self.parameters,
                     'val_target': getattr(self, 'val_target', None),
-                    'best_val_target': getattr(self, 'best_val_target', None)}
+                    'best_val_target': getattr(self, 'best_val_target', None),
+                    'eval_metrics': getattr(self, 'last_eval_metrics', None)}
             if self.scaler is not None:
                 state['scaler'] = self.scaler.state_dict()
             if hasattr(self, 'scheduler'):
@@ -517,7 +518,24 @@ class BaseTrainer:
                 state['scheduler_states'] = scheduler_states
                 state['scheduler_iter'] = self.scheduler.iter
             torch.save(state, self.model_path)
+            self._rotate_checkpoints()
         synchronize()
+
+    def _rotate_checkpoints(self, keep_last_n=5):
+        """Keep only the last N epoch checkpoints. Never deletes _best checkpoint."""
+        checkpoint_dir = os.path.dirname(self.model_path)
+        base_name = os.path.basename(self.model_path)
+        if '_epoch_' in base_name or '_best' in base_name:
+            return
+        epoch_path = self.model_path + "_epoch_{}".format(self.epoch)
+        import shutil
+        shutil.copy2(self.model_path, epoch_path)
+        import glob as glob_mod
+        pattern = self.model_path + "_epoch_*"
+        epoch_files = sorted(glob_mod.glob(pattern), key=os.path.getmtime)
+        for old_file in epoch_files[:-keep_last_n]:
+            os.remove(old_file)
+            print_ddp("Removed old checkpoint: {}".format(os.path.basename(old_file)))
         
     def get_embedding_path(self, mode="umap_emb", iters=-1):
         self.get_saved_model_path()
