@@ -181,6 +181,10 @@ class Trainer(BaseTrainer):
 
         val_loss = []
         feature_bank = []
+        knn_all_confidences = []
+        knn_all_predicted = []
+        knn_all_true_labels = []
+        knn_all_correct = []
         with torch.no_grad():
             for images, labels in iter_bar:
                 if len(labels) == 2 and isinstance(labels, list):
@@ -193,32 +197,44 @@ class Trainer(BaseTrainer):
                     outputs, features = self.model.module(images, return_embedding=True)
                 else:
                     outputs, features = self.model(images, return_embedding=True)
-                    
+
                 if self.log_embeddings:
-                    feature_bank.append(features.clone().detach().cpu())   
-                        
+                    feature_bank.append(features.clone().detach().cpu())
+
                 if self.knn_eval:
                     features = F.normalize(features, dim=1)
-                    pred_labels = self.knn_predict(feature = features, 
-                                                   feature_bank=self.feature_bank, 
-                                                   feature_labels= self.targets_bank, 
-                                                   knn_k=knn_nhood, knn_t=0.1, classes=n_classes, 
+                    pred_labels = self.knn_predict(feature = features,
+                                                   feature_bank=self.feature_bank,
+                                                   feature_labels= self.targets_bank,
+                                                   knn_k=knn_nhood, knn_t=0.1, classes=n_classes,
                                                    multi_label = not dataloader.dataset.is_multiclass)
                     knn_metric.add_preds(pred_labels, labels, using_knn=True)
+                    confidence, predicted = pred_labels.max(dim=1)
+                    knn_all_confidences.append(confidence.cpu())
+                    knn_all_predicted.append(predicted.cpu())
+                    knn_all_true_labels.append(labels.cpu())
+                    knn_all_correct.append((predicted == labels).cpu())
 
                 loss = self.criterion(outputs, labels)
                 val_loss.append(loss.item())
                 metric.add_preds(outputs, labels)
-                
+
         # building Umap embeddings
         if self.log_embeddings:
             self.build_umaps(feature_bank, dataloader, labels = knn_metric.truths, mode='val')
-            
+
         self.val_loss = np.array(val_loss).mean()
         eval_metrics = metric.get_value(use_dist=isinstance(dataloader,DS))
         if self.knn_eval:
             eval_metrics.update(knn_metric.get_value(use_dist=isinstance(dataloader,DS)))
         self.val_target = eval_metrics[f"val_{target_metric}"]
+
+        if self.knn_eval and knn_all_confidences:
+            self._save_knn_cache(
+                dataloader.dataset.int_to_labels, n_classes,
+                knn_all_confidences, knn_all_predicted,
+                knn_all_true_labels, knn_all_correct,
+            )
 
         if not self.is_grid_search:
             if self.report_intermediate_steps:
@@ -234,6 +250,32 @@ class Trainer(BaseTrainer):
                 self.best_model = model_to_CPU_state(self.model)
         self.model.train()
         
+    def _save_knn_cache(self, int_to_labels, n_classes,
+                        knn_all_confidences, knn_all_predicted,
+                        knn_all_true_labels, knn_all_correct):
+        try:
+            self.get_saved_model_path()
+            cache_path = self.model_path + '_knn_cache.pt'
+            knn_results = {
+                'confidences': torch.cat(knn_all_confidences),
+                'predicted': torch.cat(knn_all_predicted),
+                'true_labels': torch.cat(knn_all_true_labels),
+                'correct': torch.cat(knn_all_correct),
+                'indices': list(range(sum(c.size(0) for c in knn_all_confidences))),
+            }
+            cache = {
+                'feature_bank': self.feature_bank.cpu(),
+                'targets_bank': self.targets_bank.cpu(),
+                'knn_results': knn_results,
+                'int_to_labels': int_to_labels,
+                'n_classes': n_classes,
+                'epoch': self.epoch,
+            }
+            torch.save(cache, cache_path)
+            print_ddp(f"Saved KNN cache: {cache_path}")
+        except Exception as e:
+            print_ddp(f"Warning: failed to save KNN cache: {e}")
+
     def test(self, dataloader=None, test_all=False, **kwargs):
         """Test function.
         """
