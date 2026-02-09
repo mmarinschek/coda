@@ -91,9 +91,13 @@ class BYOLTrainer(Trainer):
                 self.logging({'train_loss': loss.item(),
                              'learning_rate': self.get_lr()}) 
     
-    def epoch_step(self, **kwargs):    
+    def epoch_step(self, **kwargs):
         self.evaluate()
         if not self.is_grid_search:
+            if getattr(self, '_pending_best_save', False):
+                self._pending_best_save = False
+                self.get_saved_model_path()
+                self.save_session(model_path=self.model_path + "_best", verbose=True)
             self.save_session()        
      
     def evaluate(self, dataloader=None, **kwargs):
@@ -171,8 +175,7 @@ class BYOLTrainer(Trainer):
                 self.best_val_target = self.val_target
                 if self.save_best_model:
                     self.best_model = model_to_CPU_state(self.model)
-                    self.get_saved_model_path()
-                    self.save_session(model_path=self.model_path + "_best", verbose=True)
+                    self._pending_best_save = True
         self.model.train()
         synchronize()
 
