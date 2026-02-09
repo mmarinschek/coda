@@ -1,4 +1,3 @@
-import json
 from utils import *
 
 from torchvision.transforms import *
@@ -480,6 +479,9 @@ class BaseTrainer:
                 for _ in range(self.iters):
                     self.scheduler.step(0, float('inf'))
                 print("=> scheduler fast-forwarded to iter {}".format(self.scheduler.iter))
+            if 'best_val_target' in checkpoint and checkpoint['best_val_target'] is not None:
+                self.best_val_target = checkpoint['best_val_target']
+                print("=> restored best_val_target: {}".format(self.best_val_target))
             print("=> loaded checkpoint '{}' (epoch {})"
                       .format(self.model_path, checkpoint['epoch']))
 
@@ -501,10 +503,11 @@ class BaseTrainer:
             self.get_saved_model_path(model_path=model_path)
             if verbose:
                 print("Saving model as {}".format(os.path.basename(self.model_path)) )
-            current_state = model_to_CPU_state(self.model)
-            state = {'iters': self.iters, 'state_dict': current_state, 'original_state' : self.org_model_state,
+            state = {'iters': self.iters, 'state_dict': self.best_model, 'original_state' : self.org_model_state,
                      'optimizer': opimizer_to_CPU_state(self.optimizer), 'epoch': self.epoch,
-                    'parameters' : self.parameters}
+                    'parameters' : self.parameters,
+                    'val_target': getattr(self, 'val_target', None),
+                    'best_val_target': getattr(self, 'best_val_target', None)}
             if self.scaler is not None:
                 state['scaler'] = self.scaler.state_dict()
             if hasattr(self, 'scheduler'):
@@ -514,21 +517,6 @@ class BaseTrainer:
                 state['scheduler_states'] = scheduler_states
                 state['scheduler_iter'] = self.scheduler.iter
             torch.save(state, self.model_path)
-            if self.best_model is not None:
-                best_path = self.model_path + '_best'
-                best_state = {k: v for k, v in state.items()}
-                best_state['state_dict'] = self.best_model
-                torch.save(best_state, best_path)
-            meta = {
-                'epoch': self.epoch,
-                'iters': self.iters,
-                'learning_rate': self.get_lr(),
-                'best_val_target': getattr(self, 'best_val_target', None),
-                'val_target': getattr(self, 'val_target', None),
-                'val_loss': getattr(self, 'val_loss', None),
-            }
-            with open(self.model_path + '.json', 'w') as f:
-                json.dump(meta, f, indent=2)
         synchronize()
         
     def get_embedding_path(self, mode="umap_emb", iters=-1):

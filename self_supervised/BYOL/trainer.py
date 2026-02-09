@@ -5,7 +5,6 @@ class BYOLTrainer(Trainer):
     def __init__(self, wraped_defs, use_momentum=True):
         super().__init__(wraped_defs)
         assert self.knn_eval, "knn_eval must be enabled - required for DDP synchronization to prevent NCCL deadlocks"
-        assert not self.save_best_model, "save_best_model must be False - checkpoint must be saved every epoch for resume capability"
         self.use_momentum = use_momentum
         self.best_model = model_to_CPU_state(self.model)        
 
@@ -43,7 +42,7 @@ class BYOLTrainer(Trainer):
                         
                 synchronize()   
                 
-            if not self.save_best_model and not self.is_grid_search:
+            if not self.is_grid_search:
                 self.best_model = model_to_CPU_state(self.model)
                 self.save_session()            
                 
@@ -171,8 +170,8 @@ class BYOLTrainer(Trainer):
                 self.best_val_target = self.val_target
                 if self.save_best_model:
                     self.best_model = model_to_CPU_state(self.model)
-            if not self.save_best_model:
-                self.best_model = model_to_CPU_state(self.model)
+                    self.get_saved_model_path()
+                    self.save_session(model_path=self.model_path + "_best", verbose=True)
         self.model.train()
         synchronize()
 
