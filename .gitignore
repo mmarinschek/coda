@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.idea/
+.DS_Store
+wandb/
+checkpoints/
+*.log
+*.pq
+*.tiff
