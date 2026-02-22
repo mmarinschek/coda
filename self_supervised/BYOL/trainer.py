@@ -4,14 +4,17 @@ from defaults.trainer import *
 class BYOLTrainer(Trainer):
     def __init__(self, wraped_defs, use_momentum=True):
         super().__init__(wraped_defs)
+        assert self.knn_eval, "knn_eval must be enabled - required for DDP synchronization to prevent NCCL deadlocks"
         self.use_momentum = use_momentum
         self.best_model = model_to_CPU_state(self.model)        
 
     def train(self):
         self.test_mode = False
+        if not self.is_grid_search:
+            self.load_session(self.restore_only_model)
         self.print_train_init()
-        
-        epoch_bar = range(self.epoch0 + 1, self.epoch0 + self.epochs + 1)
+
+        epoch_bar = range(self.epoch0 + 1, self.epochs + 1)
         if self.is_rank0:
             epoch_bar = tqdm(epoch_bar, desc='Epoch', leave=False)
         
@@ -31,14 +34,15 @@ class BYOLTrainer(Trainer):
                 
                 # going through epoch step
                 if self.val_every != np.inf:
-                    if (self.iters % int(self.val_every * self.epoch_steps) == 0): 
+                    val_interval = max(1, int(self.val_every * self.epoch_steps))
+                    if (self.iters % val_interval == 0):
                         synchronize()
                         self.epoch_step()  
                         self.model.train()         
                         
                 synchronize()   
                 
-            if not self.save_best_model and not self.is_grid_search:
+            if not self.is_grid_search:
                 self.best_model = model_to_CPU_state(self.model)
                 self.save_session()            
                 
@@ -57,7 +61,7 @@ class BYOLTrainer(Trainer):
             labels = labels[0]
 
         # go through the model
-        with autocast(self.use_mixed_precision):
+        with autocast('cuda', enabled=self.use_mixed_precision):
             loss = self.model(images) 
                 
         # backprop
@@ -76,9 +80,9 @@ class BYOLTrainer(Trainer):
         
         if self.use_momentum:
             if ddp_is_on():
-                self.model.module.ema_update(self.iters)
+                self.model.module.ema_update(self.iters - 1)
             else:
-                self.model.ema_update(self.iters)
+                self.model.ema_update(self.iters - 1)
 
         self.scheduler.step(self.val_target, self.val_loss)
         if self.iters % self.log_every == 0 or (self.iters == 1 and not self.is_grid_search):
@@ -87,25 +91,41 @@ class BYOLTrainer(Trainer):
                 self.logging({'train_loss': loss.item(),
                              'learning_rate': self.get_lr()}) 
     
-    def epoch_step(self, **kwargs):    
+    def epoch_step(self, **kwargs):
         self.evaluate()
         if not self.is_grid_search:
-            self.save_session()        
+            should_save_best = getattr(self, '_pending_best_save', False)
+            if ddp_is_on():
+                flag = torch.tensor([1 if should_save_best else 0], dtype=torch.long, device=self.device_id)
+                dist.broadcast(flag, src=0)
+                should_save_best = bool(flag.item())
+            if should_save_best:
+                self._pending_best_save = False
+                self.get_saved_model_path()
+                self.save_session(model_path=self.model_path + "_best", verbose=True)
+            self.save_session()
      
     def evaluate(self, dataloader=None, **kwargs):
-        """Validation loop function.        
+        """Validation loop function.
+
+        IMPORTANT: knn_eval must be enabled (True) in training_params.
+        build_feature_bank and synchronize calls are required on ALL DDP ranks
+        to prevent NCCL deadlocks during distributed training.
         """
         self.build_feature_bank()
-            
-        if not self.is_rank0: return
+
+        if not self.is_rank0:
+            synchronize()
+            return
 
         self.model.eval()
         if dataloader == None:
             dataloader = self.valloader
-            
+
         if not len(dataloader):
             self.best_model = model_to_CPU_state(self.model)
             self.model.train()
+            synchronize()
             return
 
         n_classes = dataloader.dataset.n_classes
@@ -116,7 +136,7 @@ class BYOLTrainer(Trainer):
             iter_bar = tqdm(dataloader, desc='Validating', leave=False, total=len(dataloader))
         else:
             iter_bar = dataloader
-            
+
         self.val_loss = None
         feature_bank = []
         with torch.no_grad():
@@ -124,34 +144,35 @@ class BYOLTrainer(Trainer):
                 if len(labels) == 2 and isinstance(labels, list):
                     ids    = labels[1]
                     labels = labels[0]
-                    
+
                 labels = labels.to(self.device_id, non_blocking=True)
                 images = images.to(self.device_id, non_blocking=True)
 
                 if is_ddp(self.model):
                     _, features = self.model.module(images, return_embedding=True)
                 else:
-                    _, features = self.model(images, return_embedding=True)                  
+                    _, features = self.model(images, return_embedding=True)
 
                 if self.log_embeddings:
                     feature_bank.append(features.clone().detach().cpu())
 
                 # knn_eval (always True)
                 features = F.normalize(features, dim=1)
-                pred_labels = self.knn_predict(feature = features, 
-                                               feature_bank = self.feature_bank, 
-                                               feature_labels =  self.targets_bank, 
+                pred_labels = self.knn_predict(feature = features,
+                                               feature_bank = self.feature_bank,
+                                               feature_labels =  self.targets_bank,
                                                knn_k = knn_nhood, knn_t = 0.1, classes=n_classes,
                                                multi_label = not dataloader.dataset.is_multiclass)
                 knn_metric.add_preds(pred_labels, labels, using_knn=True)
 
-        # building Umap embeddings        
+        # building Umap embeddings
         if self.log_embeddings:
             self.build_umaps(feature_bank, dataloader, labels=knn_metric.truths, mode='val')
 
         eval_metrics = knn_metric.get_value(use_dist=isinstance(dataloader, DS))
         self.val_target = eval_metrics[f"knn_val_{target_metric}"]
-        
+        self.last_eval_metrics = eval_metrics
+
         if not self.is_grid_search:
             if self.report_intermediate_steps:
                 self.logging(eval_metrics)
@@ -159,9 +180,9 @@ class BYOLTrainer(Trainer):
                 self.best_val_target = self.val_target
                 if self.save_best_model:
                     self.best_model = model_to_CPU_state(self.model)
-            if not self.save_best_model:
-                self.best_model = model_to_CPU_state(self.model)
+                    self._pending_best_save = True
         self.model.train()
+        synchronize()
 
                     
     @property

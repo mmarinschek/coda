@@ -132,11 +132,12 @@ class DefaultWrapper:
         feature_bank_sampler = None
         train_shuffle = self.dataloader_params['trainloader']['shuffle']
         # distributed sampler 
-        if ddp_is_on():        
-            train_sampler = DS(trainset, num_replicas=self.visible_world, rank=self.device_id)
+        if ddp_is_on():
+            ddp_rank = dist.get_rank()
+            train_sampler = DS(trainset, num_replicas=self.visible_world, rank=ddp_rank)
             if feature_bank_set is not None:
                 feature_bank_sampler = DS(feature_bank_set, num_replicas=self.visible_world, shuffle=False,
-                                          rank=self.device_id)
+                                          rank=ddp_rank)
             self.dataloader_params['trainloader']['shuffle'] = False
 
         # define distributed samplers etc
@@ -189,7 +190,8 @@ class DefaultWrapper:
             
         model.to(self.device_id)
         if self.visible_world > 1 and torch.distributed.is_initialized():
-            model = DDP(model, device_ids=[self.device_id])
+            ddp_device_ids = None if self.device_id == "cpu" else [self.device_id]
+            model = DDP(model, device_ids=ddp_device_ids)
         return model
     
     @staticmethod
@@ -387,16 +389,20 @@ class DefaultWrapper:
     
     @property
     def visible_world(self):
-        return torch.cuda.device_count()   
-   
+        if dist.is_available() and dist.is_initialized() and not torch.cuda.is_available():
+            return dist.get_world_size()
+        return torch.cuda.device_count()
+
     @property
     def visible_ids(self):
         return list(range(torch.cuda.device_count()))
-    
+
     @property
-    def device_id(self):    
-        return torch.cuda.current_device() if self.visible_world else "cpu"
-    
+    def device_id(self):
+        if not torch.cuda.is_available():
+            return "cpu"
+        return torch.cuda.current_device()
+
     @property
     def is_rank0(self):
         return is_rank0(self.device_id)

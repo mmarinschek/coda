@@ -28,8 +28,7 @@ def install(package):
     
 def check_dir(path):
     path = os.path.abspath(path)
-    if not os.path.exists(path):
-        os.makedirs(path)
+    os.makedirs(path, exist_ok=True)
         
 def dir_path(path):
     path = os.path.abspath(path)

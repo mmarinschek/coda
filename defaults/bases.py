@@ -1,4 +1,5 @@
 from utils import *
+import torch.distributed as dist
 
 from torchvision.transforms import *
 from torch.utils.data.sampler import Sampler
@@ -295,15 +296,15 @@ class BaseSet(Dataset):
     
 class BaseModel(nn.Module):
     """Base model that Classifier subclasses.
-    
+
     This class only has utility functions like freeze/unfreeze and init_weights.
     Not intended to be used directly.
     """
     def __init__(self):
-        super().__init__()  
-        super().__init__() 
-        self.use_mixed_precision = False        
-        self.base_id = torch.cuda.current_device() if self.visible_world else "cpu"
+        super().__init__()
+        super().__init__()
+        self.use_mixed_precision = False
+        self.base_id = self.device_id
     
     def attr_from_dict(self, param_dict):
         for key in param_dict:
@@ -390,23 +391,25 @@ class BaseModel(nn.Module):
                 
     @property
     def visible_world(self):
-        return torch.cuda.device_count()   
-   
+        if dist.is_available() and dist.is_initialized() and not torch.cuda.is_available():
+            return dist.get_world_size()
+        return torch.cuda.device_count()
+
     @property
     def visible_ids(self):
         return list(range(torch.cuda.device_count()))
-    
+
     @property
-    def device_id(self):    
-        did = torch.cuda.current_device() if self.visible_world else "cpu"
-        assert self.base_id == did
-        return did              
-    
+    def device_id(self):
+        if not torch.cuda.is_available():
+            return "cpu"
+        return torch.cuda.current_device()
+
     @property
     def is_rank0(self):
         return is_rank0(self.device_id)
-   
-                
+
+
 class BaseTrainer:
     """Base trainer class that Trainer subclasses.
 
@@ -415,7 +418,7 @@ class BaseTrainer:
     """
     def __init__(self):
         self.scaler = None
-        self.use_mixed_precision = False        
+        self.use_mixed_precision = False
         self.is_supervised = True
         self.val_loss = float("inf")
         self.best_val_loss = float("inf")
@@ -424,9 +427,9 @@ class BaseTrainer:
         self.iters = 0
         self.epoch0 = 0
         self.epoch = 0
-        self.base_id = torch.cuda.current_device() if self.visible_world else "cpu"
+        self.base_id = self.device_id
         self.is_grid_search = False
-        self.report_intermediate_steps = True  
+        self.report_intermediate_steps = True
     
     def attr_from_dict(self, param_dict):
         for key in param_dict:
@@ -446,7 +449,7 @@ class BaseTrainer:
         self.get_saved_model_path(model_path=model_path)
         if os.path.isfile(self.model_path) and self.restore_session:        
             print("Loading model from {}".format(self.model_path))
-            checkpoint = torch.load(self.model_path)
+            checkpoint = torch.load(self.model_path, map_location="cpu")
             if is_parallel(self.model):
                 self.model.module.load_state_dict(checkpoint['state_dict'])
             else:
@@ -461,12 +464,27 @@ class BaseTrainer:
             
             self.iters = checkpoint['iters']
             self.epoch = checkpoint['epoch']
+            self.epoch0 = checkpoint['epoch']
             self.optimizer.load_state_dict(checkpoint['optimizer'])
             for state in self.optimizer.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(self.device_id)
             self.org_optimizer_state = opimizer_to_CPU_state(self.optimizer)
+            if 'scheduler_states' in checkpoint and hasattr(self, 'scheduler'):
+                for sch, saved_state in zip(self.scheduler.schedulers, checkpoint['scheduler_states']):
+                    if saved_state is not None and hasattr(sch, 'load_state_dict'):
+                        sch.load_state_dict(saved_state)
+                self.scheduler.iter = checkpoint.get('scheduler_iter', self.iters)
+                print("=> restored scheduler state (iter {})".format(self.scheduler.iter))
+            elif hasattr(self, 'scheduler'):
+                self.scheduler.iter = 0
+                for _ in range(self.iters):
+                    self.scheduler.step(0, float('inf'))
+                print("=> scheduler fast-forwarded to iter {}".format(self.scheduler.iter))
+            if 'best_val_target' in checkpoint and checkpoint['best_val_target'] is not None:
+                self.best_val_target = checkpoint['best_val_target']
+                print("=> restored best_val_target: {}".format(self.best_val_target))
             print("=> loaded checkpoint '{}' (epoch {})"
                       .format(self.model_path, checkpoint['epoch']))
 
@@ -490,11 +508,37 @@ class BaseTrainer:
                 print("Saving model as {}".format(os.path.basename(self.model_path)) )
             state = {'iters': self.iters, 'state_dict': self.best_model, 'original_state' : self.org_model_state,
                      'optimizer': opimizer_to_CPU_state(self.optimizer), 'epoch': self.epoch,
-                    'parameters' : self.parameters}
+                    'parameters' : self.parameters,
+                    'val_target': getattr(self, 'val_target', None),
+                    'best_val_target': getattr(self, 'best_val_target', None),
+                    'eval_metrics': getattr(self, 'last_eval_metrics', None)}
             if self.scaler is not None:
-                state['scaler'] = self.scaler.state_dict()            
+                state['scaler'] = self.scaler.state_dict()
+            if hasattr(self, 'scheduler'):
+                scheduler_states = []
+                for sch in self.scheduler.schedulers:
+                    scheduler_states.append(sch.state_dict() if hasattr(sch, 'state_dict') else None)
+                state['scheduler_states'] = scheduler_states
+                state['scheduler_iter'] = self.scheduler.iter
             torch.save(state, self.model_path)
+            self._rotate_checkpoints()
         synchronize()
+
+    def _rotate_checkpoints(self, keep_last_n=5):
+        """Keep only the last N epoch checkpoints. Never deletes _best checkpoint."""
+        checkpoint_dir = os.path.dirname(self.model_path)
+        base_name = os.path.basename(self.model_path)
+        if '_epoch_' in base_name or '_best' in base_name:
+            return
+        epoch_path = self.model_path + "_epoch_{}".format(self.epoch)
+        import shutil
+        shutil.copy2(self.model_path, epoch_path)
+        import glob as glob_mod
+        pattern = self.model_path + "_epoch_*"
+        epoch_files = sorted(glob_mod.glob(pattern), key=os.path.getmtime)
+        for old_file in epoch_files[:-keep_last_n]:
+            os.remove(old_file)
+            print_ddp("Removed old checkpoint: {}".format(os.path.basename(old_file)))
         
     def get_embedding_path(self, mode="umap_emb", iters=-1):
         self.get_saved_model_path()
@@ -535,16 +579,20 @@ class BaseTrainer:
              
     @property
     def visible_world(self):
-        return torch.cuda.device_count()   
-   
+        if dist.is_available() and dist.is_initialized() and not torch.cuda.is_available():
+            return dist.get_world_size()
+        return torch.cuda.device_count()
+
     @property
     def visible_ids(self):
         return list(range(torch.cuda.device_count()))
-    
+
     @property
-    def device_id(self):    
-        return torch.cuda.current_device() if self.visible_world else "cpu"
-    
+    def device_id(self):
+        if not torch.cuda.is_available():
+            return "cpu"
+        return torch.cuda.current_device()
+
     @property
     def is_rank0(self):
         return is_rank0(self.device_id)

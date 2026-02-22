@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from .transformers_utils import *
 import torch.utils.checkpoint as checkpoint
-from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+from timm.layers import DropPath, to_2tuple, trunc_normal_
 import numpy as np
 
 class Mlp(nn.Module):

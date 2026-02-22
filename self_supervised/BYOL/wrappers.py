@@ -31,7 +31,8 @@ class BYOLWrapper(DefaultWrapper):
         momentum_iters = len(self.dataloaders.trainloader) * self.training_params.epochs
         model = BYOL(online_encoder, target_encoder, momentum_iters, use_momentum=self.use_momentum)  
         if ddp_is_on():
-            model = DDP(model, device_ids=[self.device_id])
+            ddp_device_ids = None if self.device_id == "cpu" else [self.device_id]
+            model = DDP(model, device_ids=ddp_device_ids)
         return model
     
     def init_criteria(self):          

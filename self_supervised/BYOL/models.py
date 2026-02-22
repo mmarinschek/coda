@@ -1,5 +1,5 @@
 from defaults.bases import *
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 
 __all__ = ['BYOL']
 
@@ -133,7 +133,7 @@ class BYOL(BaseModel):
             target_params.data = self.ema_updater(online_params.data, target_params.data)     
 
     def forward(self, x, return_embedding = False, adverserial_targets = None):
-        with autocast(self.use_mixed_precision):
+        with autocast('cuda', enabled=self.use_mixed_precision):
             if return_embedding:
                 assert isinstance(x, torch.Tensor), f"Expecting single view tensor but found {type(x)}"
                 x = x.to(self.device_id, non_blocking=True)
